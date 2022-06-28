@@ -23,3 +23,21 @@ item5.X-ABLabel:_$!<Friend>!$_
 CATEGORIES:Work,Test group
 X-ABUID:5AD380FD-B2DE-4261-BA99-DE1D1DB52FBE\:ABPerson
 END:VCARD
+
+BEGIN:VCARD
+VERSION:3.0
+FN:John Examplara
+N:Examplara;John;;;
+EMAIL;TYPE=INTERNET;TYPE=WORK:john@example.com
+TEL;TYPE=HOME:00 31 6 12345678
+item1.ADR:;;Randomstreet 31;Amsterdam;;1234 AB;NL;Randomstreet 31\n1234 AB 
+ Amsterdam\nNL
+item1.X-ABLabel:
+item2.ORG:ACME inc.
+item2.X-ABLabel:
+item3.TITLE:Chief of Staff
+item3.X-ABLabel:
+BDAY:19910101
+NOTE:Really cool guy
+CATEGORIES:myContacts
+END:VCARD
