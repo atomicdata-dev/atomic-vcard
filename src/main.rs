@@ -38,7 +38,7 @@ fn parse_contacts(buf: BufReader<File>) -> String {
 fn parse_contact(properties: Vec<Property>) -> String {
   let mut result = "  {\r\n".to_owned();
   result.push_str(
-    "    \"https://atomicdata.dev/properties/isA\": [\"https://atomcidata.dev/classes/Person\"],\r\n",
+    "    \"https://atomicdata.dev/properties/isA\": [\"https://atomicdata.dev/classes/Person\"],\r\n",
   );
 
   let mut grouped_properties: HashMap<String, Vec<Property>> = HashMap::new();
@@ -50,21 +50,25 @@ fn parse_contact(properties: Vec<Property>) -> String {
       .push(property);
   }
 
-  let id = to_key_value_pair(
+  let name = &get_vcard_value("FN".to_owned(), &grouped_properties)
+    .unwrap_or(get_vcard_value("N".to_owned(), &grouped_properties).expect("no name in VCard"));
+
+  result.push_str(&to_key_value_pair(
     "    ".to_owned(),
-    "https://atomicdata.dev/properties/localId".to_owned(),
-    get_vcard_value("VERSION".to_owned(), &grouped_properties).expect("no version in VCard")
-      + &get_vcard_value("FN".to_owned(), &grouped_properties).unwrap_or("".to_owned())
-      + &get_vcard_value("N".to_owned(), &grouped_properties).unwrap_or("".to_owned()),
+    "https://atomicdata.dev/properties/name".to_owned(),
+    name.to_owned(),
+  ));
+
+  result.push_str(
+    &(to_key_value_pair(
+      "    ".to_owned(),
+      "https://atomicdata.dev/properties/localId".to_owned(),
+      get_vcard_value("VERSION".to_owned(), &grouped_properties).expect("no version in VCard")
+        + name,
+    )),
   );
 
-  result.push_str(&id);
-
-  for (name, values) in grouped_properties {
-    if values.len() > 0 {
-      result.push_str(&parse_property(&name, values));
-    }
-  }
+  result.push_str(&parse_grouped_properties(grouped_properties));
 
   result.push_str("  },\r\n");
   return result;
@@ -74,49 +78,57 @@ fn get_vcard_value(name: String, hash_map: &HashMap<String, Vec<Property>>) -> O
   return hash_map[&name].first()?.value.clone();
 }
 
-fn parse_property(property_name: &str, property_values: Vec<Property>) -> String {
-  match property_name {
-    "TEL" => parse_array_property(
-      "https://atomicdata.dev/properties/phoneNumbers".to_owned(),
-      "PhoneNumber".to_owned(),
-      "https://atomicdata.dev/properties/phoneNumber".to_owned(),
-      property_values,
-    ),
-    "ADR" => parse_array_property(
-      "https://atomicdata.dev/properties/adresses".to_owned(),
-      "Adress".to_owned(),
-      "https://atomicdata.dev/properties/adress".to_owned(),
-      property_values,
-    ),
-    "EMAIL" => parse_array_property(
-      "https://atomicdata.dev/properties/emails".to_owned(),
-      "Email".to_owned(),
-      "https://atomicdata.dev/properties/email".to_owned(),
-      property_values,
-    ),
-    "BDAY" => parse_single_property(
-      "https://atomicdata.dev/properties/birthdate".to_owned(),
-      property_values,
-    )
-    .expect("birthday error"),
-    _ => parse_array_property(
-      "https://atomicdata.dev/properties/vCard-".to_owned() + property_name + "s",
-      "VCard-".to_owned() + property_name,
-      "https://atomicdata.dev/properties/vCard-".to_owned() + property_name,
-      property_values,
-    ),
+fn parse_grouped_properties(grouped_properties: HashMap<String, Vec<Property>>) -> String {
+  let mut result = "".to_owned();
+  let mut unknown_properties =
+    "    \"https://atomicdata.dev/properties/vCardUnknown\": [\r\n".to_owned();
+
+  for (property_name, property_group) in grouped_properties {
+    if property_group.len() > 0 {
+      match property_name.as_str() {
+        "TEL" => result.push_str(&parse_array_property(
+          "phoneNumbers".to_owned(),
+          "PhoneNumber".to_owned(),
+          "phoneNumber".to_owned(),
+          property_group,
+        )),
+        "ADR" => result.push_str(&parse_array_property(
+          "adresses".to_owned(),
+          "Adress".to_owned(),
+          "adress".to_owned(),
+          property_group,
+        )),
+        "EMAIL" => result.push_str(&parse_array_property(
+          "emailAddresses".to_owned(),
+          "EmailAddress".to_owned(),
+          "emailAddress".to_owned(),
+          property_group,
+        )),
+        "BDAY" => result.push_str(
+          &parse_single_property("birthdate".to_owned(), property_group).expect("birthday error"),
+        ),
+        "VERSION" => (),
+        "FN" => (),
+        "N" => (),
+        _ => unknown_properties.push_str(&parse_unknown_property(property_group)),
+      }
+    }
   }
+
+  unknown_properties.push_str("    ],\r\n");
+  result.push_str(&unknown_properties);
+  return result;
 }
 
 fn parse_single_property(
   property_name: String,
-  property_values: Vec<Property>,
+  property_group: Vec<Property>,
 ) -> Result<String, String> {
-  if property_values.len() > 1 {
+  if property_group.len() > 1 {
     return Err("too many ".to_owned() + &property_name);
   }
 
-  match property_values.first() {
+  match property_group.first() {
     None => return Err("no value for ".to_owned() + &property_name),
     Some(x) => {
       return Ok(to_key_value_pair(
@@ -132,18 +144,47 @@ fn parse_array_property(
   properties_name: String,
   class_name: String,
   property_name: String,
-  property_values: Vec<Property>,
+  property_group: Vec<Property>,
 ) -> String {
-  let mut result = "    \"".to_owned() + &properties_name + "\": [\r\n";
+  let mut result =
+    "    \"https://atomicdata.dev/properties/".to_owned() + &properties_name + "\": [\r\n";
 
-  for property in property_values {
-    result.push_str(&parse_params(property, &class_name, &property_name));
+  for property in property_group {
+    result.push_str(&parse_params(
+      property,
+      &class_name,
+      &("https://atomicdata.dev/properties/".to_owned() + &property_name),
+    ));
   }
   result.push_str("    ],\r\n");
   return result;
 }
 
-fn parse_unknown_property() {}
+fn parse_unknown_property(property_group: Vec<Property>) -> String {
+  let mut result = "".to_owned();
+  for property in property_group {
+    if let Some(value) = property.value {
+      result.push_str("      {\r\n");
+
+      result.push_str(&to_key_value_pair(
+        "        ".to_owned(),
+        "https://atomicdata.dev/properties/name".to_owned(),
+        property.name,
+      ));
+
+      result.push_str(&to_key_value_pair(
+        "        ".to_owned(),
+        "https://atomicdata.dev/properties/value".to_owned(),
+        value,
+      ));
+
+      result.push_str(&make_description(property.params));
+
+      result.push_str("      },\r\n");
+    }
+  }
+  return result;
+}
 
 fn parse_params(property: Property, class_name: &String, property_name: &String) -> String {
   if let None = property.value {
@@ -153,7 +194,7 @@ fn parse_params(property: Property, class_name: &String, property_name: &String)
   let mut result = "      {\r\n".to_owned();
 
   result.push_str(
-    &("        \"https://atomicdata.dev/properties/isA\": [\"https://atomcidata.dev/classes/"
+    &("        \"https://atomicdata.dev/properties/isA\": [\"https://atomicdata.dev/classes/"
       .to_owned()
       + &class_name
       + "\"],\r\n"),
@@ -165,7 +206,15 @@ fn parse_params(property: Property, class_name: &String, property_name: &String)
     property.value.unwrap(),
   ));
 
-  if let Some(params) = property.params {
+  result.push_str(&make_description(property.params));
+  result.push_str("      },\r\n");
+  return result;
+}
+
+fn make_description(params_option: Option<Vec<(String, Vec<String>)>>) -> String {
+  let mut result = "".to_owned();
+
+  if let Some(params) = params_option {
     if params.len() > 0 {
       let mut description = "".to_owned();
       for (param_name, param_values) in params {
@@ -179,7 +228,6 @@ fn parse_params(property: Property, class_name: &String, property_name: &String)
       ))
     }
   }
-  result.push_str("      },\r\n");
   return result;
 }
 
