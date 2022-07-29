@@ -6,5 +6,7 @@ edition = "2021"
 # See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
 
 [dependencies]
-ical = "0.7.*"
+ical = "0.7"
+serde_json = "1"
+serde = "1"
 # atomic-lib = "0.32"

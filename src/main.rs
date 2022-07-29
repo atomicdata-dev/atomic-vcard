@@ -1,5 +1,6 @@
 use ical::property::Property;
 use ical::{self};
+use serde_json;
 
 use std::collections::HashMap;
 use std::fs::File;
@@ -8,12 +9,15 @@ use std::io::BufReader;
 fn main() {
   print!(
     "{}",
-    parse_contacts(BufReader::new(File::open("./vcards.vcf").unwrap()))
+    serde_json::to_string_pretty(&parse_vcard_file(BufReader::new(
+      File::open("./vcards.vcf").unwrap()
+    )))
+    .unwrap()
   )
 }
 
-fn parse_contacts(buf: BufReader<File>) -> String {
-  let mut result = "[\r\n".to_owned();
+fn parse_vcard_file(buf: BufReader<File>) -> serde_json::Value {
+  let mut contacts = vec![];
 
   let reader = ical::VcardParser::new(buf);
 
@@ -28,17 +32,18 @@ fn parse_contacts(buf: BufReader<File>) -> String {
       }
     }
 
-    result.push_str(&parse_contact(contact.properties));
+    contacts.push(parse_contact(contact.properties));
   }
 
-  result.push_str("]\r\n");
-  return result;
+  return serde_json::Value::Array(contacts);
 }
 
-fn parse_contact(properties: Vec<Property>) -> String {
-  let mut result = "  {\r\n".to_owned();
-  result.push_str(
-    "    \"https://atomicdata.dev/properties/isA\": [\"https://atomicdata.dev/classes/Person\"],\r\n",
+fn parse_contact(properties: Vec<Property>) -> serde_json::Value {
+  let mut map = serde_json::Map::new();
+
+  map.insert(
+    "https://atomicdata.dev/properties/isA".into(),
+    serde_json::Value::Array(vec!["https://atomicdata.dev/classes/Person".into()]),
   );
 
   let mut grouped_properties: HashMap<String, Vec<Property>> = HashMap::new();
@@ -53,87 +58,88 @@ fn parse_contact(properties: Vec<Property>) -> String {
   let name = &get_vcard_value("FN".to_owned(), &grouped_properties)
     .unwrap_or(get_vcard_value("N".to_owned(), &grouped_properties).expect("no name in VCard"));
 
-  result.push_str(&to_key_value_pair(
-    "    ".to_owned(),
-    "https://atomicdata.dev/properties/name".to_owned(),
-    name.to_owned(),
-  ));
-
-  result.push_str(
-    &(to_key_value_pair(
-      "    ".to_owned(),
-      "https://atomicdata.dev/properties/localId".to_owned(),
-      get_vcard_value("VERSION".to_owned(), &grouped_properties).expect("no version in VCard")
-        + name,
-    )),
+  map.insert(
+    "https://atomicdata.dev/properties/name".into(),
+    serde_json::Value::String(name.into()),
   );
 
-  result.push_str(&parse_grouped_properties(grouped_properties));
+  map.insert(
+    "https://atomicdata.dev/properties/localId".into(),
+    serde_json::Value::String(
+      (get_vcard_value("VERSION".to_owned(), &grouped_properties).expect("no version in VCard")
+        + name)
+        .into(),
+    ),
+  );
 
-  result.push_str("  },\r\n");
-  return result;
+  parse_grouped_properties(&mut map, grouped_properties);
+
+  return serde_json::Value::Object(map);
 }
 
 fn get_vcard_value(name: String, hash_map: &HashMap<String, Vec<Property>>) -> Option<String> {
   return hash_map[&name].first()?.value.clone();
 }
 
-fn parse_grouped_properties(grouped_properties: HashMap<String, Vec<Property>>) -> String {
-  let mut result = "".to_owned();
-  let mut unknown_properties =
-    "    \"https://atomicdata.dev/properties/vCardUnknown\": [\r\n".to_owned();
+fn parse_grouped_properties(
+  map: &mut serde_json::Map<String, serde_json::Value>,
+  grouped_properties: HashMap<String, Vec<Property>>,
+) {
+  let mut unknown_properties: Vec<serde_json::Value> = vec![];
 
   for (property_name, property_group) in grouped_properties {
     if property_group.len() > 0 {
       match property_name.as_str() {
-        "TEL" => result.push_str(&parse_array_property(
-          "phoneNumbers".to_owned(),
-          "PhoneNumber".to_owned(),
-          "phoneNumber".to_owned(),
-          property_group,
+        "TEL" => drop(map.insert(
+          "https://atomicdata.dev/properties/phoneNumbers".into(),
+          parse_array_property(
+            "PhoneNumber".to_owned(),
+            "phoneNumber".to_owned(),
+            property_group,
+          ),
         )),
-        "ADR" => result.push_str(&parse_array_property(
-          "adresses".to_owned(),
-          "Adress".to_owned(),
-          "adress".to_owned(),
-          property_group,
+        "ADR" => drop(map.insert(
+          "https://atomicdata.dev/properties/adresses".into(),
+          parse_array_property("Adress".to_owned(), "adress".to_owned(), property_group),
         )),
-        "EMAIL" => result.push_str(&parse_array_property(
-          "emailAddresses".to_owned(),
-          "EmailAddress".to_owned(),
-          "emailAddress".to_owned(),
-          property_group,
+        "EMAIL" => drop(map.insert(
+          "https://atomicdata.dev/properties/emailAddresses".into(),
+          parse_array_property(
+            "EmailAddress".to_owned(),
+            "emailAddress".to_owned(),
+            property_group,
+          ),
         )),
-        "BDAY" => result.push_str(
-          &parse_single_property("birthdate".to_owned(), property_group).expect("birthday error"),
-        ),
-        "VERSION" => (),
-        "FN" => (),
-        "N" => (),
-        _ => unknown_properties.push_str(&parse_unknown_property(property_group)),
+        "BDAY" => drop(map.insert(
+          "https://atomicdata.dev/properties/birthdate".into(),
+          parse_single_property(property_group).expect("birthday error"),
+        )),
+        "VERSION" | "FN" | "N" => (),
+        _ => parse_unknown_property(property_group, &mut unknown_properties),
       }
     }
   }
 
-  unknown_properties.push_str("    ],\r\n");
-  result.push_str(&unknown_properties);
-  return result;
+  map.insert(
+    "https://atomicdata.dev/properties/vCardUnknowns".into(),
+    serde_json::Value::Array(unknown_properties),
+  );
 }
 
-fn parse_single_property(
-  property_name: String,
-  property_group: Vec<Property>,
-) -> Result<String, String> {
+fn parse_single_property(property_group: Vec<Property>) -> Result<serde_json::Value, String> {
   if property_group.len() > 1 {
-    return Err("too many ".to_owned() + &property_name);
+    return Err(format!("too many {}", property_group.first().unwrap().name));
   }
 
   match property_group.first() {
-    None => return Err("no value for ".to_owned() + &property_name),
+    None => {
+      return Err(format!(
+        "no value for {}",
+        property_group.first().unwrap().name
+      ))
+    }
     Some(x) => {
-      return Ok(to_key_value_pair(
-        "    ".to_owned(),
-        property_name,
+      return Ok(serde_json::Value::String(
         x.value.as_ref().unwrap().to_string(),
       ))
     }
@@ -141,79 +147,86 @@ fn parse_single_property(
 }
 
 fn parse_array_property(
-  properties_name: String,
   class_name: String,
   property_name: String,
   property_group: Vec<Property>,
-) -> String {
-  let mut result =
-    "    \"https://atomicdata.dev/properties/".to_owned() + &properties_name + "\": [\r\n";
+) -> serde_json::Value {
+  let mut result = vec![];
 
   for property in property_group {
-    result.push_str(&parse_params(
+    if let Some(x) = parse_params(
       property,
       &class_name,
       &("https://atomicdata.dev/properties/".to_owned() + &property_name),
-    ));
-  }
-  result.push_str("    ],\r\n");
-  return result;
-}
-
-fn parse_unknown_property(property_group: Vec<Property>) -> String {
-  let mut result = "".to_owned();
-  for property in property_group {
-    if let Some(value) = property.value {
-      result.push_str("      {\r\n");
-
-      result.push_str(&to_key_value_pair(
-        "        ".to_owned(),
-        "https://atomicdata.dev/properties/name".to_owned(),
-        property.name,
-      ));
-
-      result.push_str(&to_key_value_pair(
-        "        ".to_owned(),
-        "https://atomicdata.dev/properties/value".to_owned(),
-        value,
-      ));
-
-      result.push_str(&make_description(property.params));
-
-      result.push_str("      },\r\n");
+    ) {
+      result.push(x);
     }
   }
-  return result;
+
+  return serde_json::Value::Array(result);
 }
 
-fn parse_params(property: Property, class_name: &String, property_name: &String) -> String {
+fn parse_unknown_property(property_group: Vec<Property>, vec: &mut Vec<serde_json::Value>) {
+  for property in property_group {
+    let mut map = serde_json::Map::new();
+    if let Some(value) = property.value {
+      map.insert(
+        "https://atomicdata.dev/properties/isA".into(),
+        serde_json::Value::Array(vec![serde_json::Value::String(format!(
+          "https://atomicdata.dev/classes/VCardUnknown"
+        ))]),
+      );
+      map.insert(
+        "https://atomicdata.dev/properties/key".into(),
+        serde_json::Value::String(property.name),
+      );
+
+      map.insert(
+        "https://atomicdata.dev/properties/atom/value".into(),
+        serde_json::Value::String(value),
+      );
+
+      if let Some(x) = make_description(property.params) {
+        map.insert("https://atomicdata.dev/properties/description".into(), x);
+      }
+
+      vec.push(serde_json::Value::Object(map));
+    }
+  }
+}
+
+fn parse_params(
+  property: Property,
+  class_name: &String,
+  property_name: &String,
+) -> Option<serde_json::Value> {
   if let None = property.value {
-    return "".to_owned();
+    return None;
   }
 
-  let mut result = "      {\r\n".to_owned();
+  let mut map = serde_json::Map::new();
 
-  result.push_str(
-    &("        \"https://atomicdata.dev/properties/isA\": [\"https://atomicdata.dev/classes/"
-      .to_owned()
-      + &class_name
-      + "\"],\r\n"),
+  map.insert(
+    "https://atomicdata.dev/properties/isA".into(),
+    serde_json::Value::Array(vec![serde_json::Value::String(format!(
+      "https://atomicdata.dev/classes/{class_name}"
+    ))]),
   );
 
-  result.push_str(&to_key_value_pair(
-    "        ".to_owned(),
-    property_name.to_owned(),
-    property.value.unwrap(),
-  ));
+  map.insert(
+    property_name.into(),
+    serde_json::Value::String(property.value.unwrap()),
+  );
 
-  result.push_str(&make_description(property.params));
-  result.push_str("      },\r\n");
-  return result;
+  if let Some(x) = make_description(property.params) {
+    map.insert("https://atomicdata.dev/properties/description".into(), x);
+  }
+  return Some(serde_json::Value::Object(map));
 }
 
-fn make_description(params_option: Option<Vec<(String, Vec<String>)>>) -> String {
-  let mut result = "".to_owned();
-
+fn make_description(
+  params_option: Option<Vec<(String, Vec<String>)>>,
+) -> Option<serde_json::Value> {
   if let Some(params) = params_option {
     if params.len() > 0 {
       let mut description = "".to_owned();
@@ -221,73 +234,11 @@ fn make_description(params_option: Option<Vec<(String, Vec<String>)>>) -> String
         description.push_str(&(param_name + "=" + &param_values.join("-") + ","));
       }
 
-      result.push_str(&to_key_value_pair(
-        "        ".to_owned(),
-        "https://atomicdata.dev/properties/description".to_owned(),
-        description,
-      ))
+      return Some(serde_json::Value::String(description));
     }
   }
-  return result;
+  return None;
 }
 
-fn to_key_value_pair(indentation: String, key: String, value: String) -> String {
-  return indentation + "\"" + &key + "\": \"" + &value + "\",\r\n";
-}
-
-// {
-//     "https://atomicdata.dev/properties/localId": "john-doe-johnDoe@example.org", // Must be locally unique & deterministic
-//     "https://atomicdata.dev/properties/phoneNumbers": [
-//         {
-//             "https://atomicdata.dev/properties/isA": ["https://atomcidata.dev/classes/PhoneNumber"],
-//             "https://atomicdata.dev/properties/number": "+31636020942",
-//             "https://atomicdata.dev/properties/name": "Home",
-//         }
-//     ]
-// }
-
-// ADR
-// AGENT
-// ANNIVERSARY
-// BDAY
-// BEGIN
-// CALADRURI
-// CALURI
-// CATEGORIES
-// CLASS
-// CLIENTPIDMAP
-// EMAIL
-// END
-// FBURL
-// FN
-// GENDER
-// GEO
-// IMPP
-// KEY
-// KIND
-// LABEL
-// LANG
-// LOGO
-// MAILER
-// MEMBER
-// N
-// NAME
-// NICKNAME
-// NOTE
-// ORG
-// PHOTO
-// PRODID
-// PROFILE
-// RELATED
-// REV
-// ROLE
-// SORT_STRING
-// SOUND
-// SOURCE
-// TEL
-// TITLE
-// TZ
-// UID
-// URL
-// VERSION
-// XML
+#[cfg(test)]
+mod test;
