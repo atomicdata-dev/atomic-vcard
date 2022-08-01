@@ -120,6 +120,8 @@ fn parse_grouped_properties(
     }
   }
 
+  unknown_properties.sort_by(|a, b| a.to_string().cmp(&b.to_string()));
+
   map.insert(
     "https://atomicdata.dev/properties/vCardUnknowns".into(),
     serde_json::Value::Array(unknown_properties),
